@@ -121,7 +121,7 @@ impl Builder {
             .private_key(private_key)
             .build()?;
         let socket = std::net::UdpSocket::bind(self.bind_address)?;
-        let (endpoint, incoming) = Endpoint::new(endpoint_config, socket)?;
+        let endpoint = Endpoint::new(endpoint_config, socket)?;
 
         let config = Arc::new(config);
 
@@ -159,7 +159,6 @@ impl Builder {
                 endpoint.clone(),
                 active_peers.clone(),
                 known_peers.clone(),
-                incoming,
                 service,
             );
 

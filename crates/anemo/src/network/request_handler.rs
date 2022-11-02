@@ -2,15 +2,10 @@ use super::{
     wire::{network_message_frame_codec, read_request, write_response},
     ActivePeers,
 };
-use crate::{connection::Connection, endpoint::NewConnection, Request, Response, Result};
+use crate::{connection::Connection, Request, Response, Result};
 use bytes::Bytes;
-use futures::{
-    future::select,
-    future::Either,
-    stream::{Fuse, FuturesUnordered},
-    StreamExt,
-};
-use quinn::{Datagrams, IncomingBiStreams, IncomingUniStreams, RecvStream, SendStream};
+use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
+use quinn::{RecvStream, SendStream};
 use std::convert::Infallible;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tower::{util::BoxCloneService, ServiceExt};
@@ -18,9 +13,6 @@ use tracing::{debug, trace};
 
 pub(crate) struct InboundRequestHandler {
     connection: Connection,
-    incoming_bi: Fuse<IncomingBiStreams>,
-    incoming_uni: Fuse<IncomingUniStreams>,
-    incoming_datagrams: Fuse<Datagrams>,
 
     service: BoxCloneService<Request<Bytes>, Response<Bytes>, Infallible>,
     active_peers: ActivePeers,
@@ -28,20 +20,12 @@ pub(crate) struct InboundRequestHandler {
 
 impl InboundRequestHandler {
     pub fn new(
-        NewConnection {
-            connection,
-            uni_streams,
-            bi_streams,
-            datagrams,
-        }: NewConnection,
+        connection: Connection,
         service: BoxCloneService<Request<Bytes>, Response<Bytes>, Infallible>,
         active_peers: ActivePeers,
     ) -> Self {
         Self {
             connection,
-            incoming_uni: uni_streams.fuse(),
-            incoming_bi: bi_streams.fuse(),
-            incoming_datagrams: datagrams.fuse(),
             service,
             active_peers,
         }
@@ -56,7 +40,7 @@ impl InboundRequestHandler {
             futures::select! {
                 // anemo does not currently use uni streams so we can
                 // just ignore and drop the stream
-                uni = self.incoming_uni.select_next_some() => {
+                uni = self.connection.accept_uni().fuse() => {
                     match uni {
                         Ok(recv_stream) => trace!("incoming uni stream! {}", recv_stream.id()),
                         Err(e) => {
@@ -65,7 +49,7 @@ impl InboundRequestHandler {
                         }
                     }
                 },
-                bi = self.incoming_bi.select_next_some() => {
+                bi = self.connection.accept_bi().fuse() => {
                     match bi {
                         Ok((bi_tx, bi_rx)) => {
                             trace!("incoming bi stream! {}", bi_tx.id());
@@ -81,7 +65,7 @@ impl InboundRequestHandler {
                 },
                 // anemo does not currently use datagrams so we can
                 // just ignore them
-                datagram = self.incoming_datagrams.select_next_some() => {
+                datagram = self.connection.read_datagram().fuse() => {
                     match datagram {
                         Ok(datagram) => trace!("incoming datagram of length: {}", datagram.len()),
                         Err(e) => {
@@ -158,9 +142,9 @@ impl BiStreamRequestHandler {
         let response = {
             let handler = self.service.oneshot(request);
             let stopped = self.send_stream.get_mut().stopped();
-            match select(handler, stopped).await {
-                Either::Left((response, _)) => response.expect("Infallible"),
-                Either::Right(_) => return Err(anyhow::anyhow!("send_stream closed by remote")),
+            tokio::select! {
+                response = handler => response.expect("Infallible"),
+                _ = stopped => return Err(anyhow::anyhow!("send_stream closed by remote")),
             }
         };
 

@@ -46,6 +46,10 @@ pub mod header {
 pub enum PeerAffinity {
     /// Always attempt to maintain a connection with this Peer
     High,
+    /// Only attempt to maintain a connection with this Peer
+    /// if we haven't reached the configured connection limit.
+    Low,
+    // /// Never attempt to maintain a connection with this Peer
     // None,
 }
 

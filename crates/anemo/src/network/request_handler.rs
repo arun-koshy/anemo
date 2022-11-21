@@ -5,13 +5,14 @@ use super::{
 use crate::{connection::Connection, endpoint::NewConnection, Request, Response, Result};
 use bytes::Bytes;
 use futures::{
-    future::select,
-    future::Either,
+    future::{select, Either},
     stream::{Fuse, FuturesUnordered},
-    StreamExt,
+    FutureExt, StreamExt,
 };
 use quinn::{Datagrams, IncomingBiStreams, IncomingUniStreams, RecvStream, SendStream};
-use std::convert::Infallible;
+use rand::{rngs::ThreadRng, Rng};
+use std::{convert::Infallible, time::Duration};
+use tokio::time::sleep;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tower::{util::BoxCloneService, ServiceExt};
 use tracing::{debug, trace};
@@ -51,6 +52,12 @@ impl InboundRequestHandler {
         debug!(peer =% self.connection.peer_id(), "InboundRequestHandler started");
 
         let mut inflight_requests = FuturesUnordered::new();
+        let mut expiration_timer = Box::pin(
+            sleep(Duration::from_secs(
+                ThreadRng::default().gen_range(1800..=5400),
+            ))
+            .fuse(),
+        );
 
         loop {
             futures::select! {
@@ -92,6 +99,11 @@ impl InboundRequestHandler {
                 },
                 () = inflight_requests.select_next_some() => {},
                 complete => break,
+                () = &mut expiration_timer => {
+                    debug!(peer =% self.connection.peer_id(), "Shutting down at expiration");
+                    self.connection.close();
+                    break;
+                }
             }
         }
 

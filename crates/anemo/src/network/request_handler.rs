@@ -9,9 +9,10 @@ use crate::{
 use bytes::Bytes;
 use quinn::RecvStream;
 use std::convert::Infallible;
+use std::time::Duration;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tower::{util::BoxCloneService, ServiceExt};
-use tracing::{debug, trace};
+use tracing::{debug, info, trace};
 
 /// Manages incoming requests from a peer.
 ///
@@ -53,8 +54,13 @@ impl InboundRequestHandler {
             rand::Rng::gen_range(&mut rand::thread_rng(), 1800..=5400),
         )));
 
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+
         loop {
             tokio::select! {
+                now = interval.tick() => {
+                    info!("InboundRequestHandler is still alive {}", self.connection.peer_id());
+                },
                 // anemo does not currently use uni streams so we can
                 // just ignore and drop the stream
                 uni = self.connection.accept_uni() => {

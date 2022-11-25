@@ -98,12 +98,12 @@ impl InboundRequestHandler {
                     }
                 },
                 () = inflight_requests.select_next_some() => {},
-                complete => break,
                 () = &mut expiration_timer => {
                     debug!(peer =% self.connection.peer_id(), "Shutting down at expiration");
                     self.connection.close();
                     break;
-                }
+                },
+                complete => break,
             }
         }
 

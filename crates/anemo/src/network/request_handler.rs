@@ -102,8 +102,7 @@ impl InboundRequestHandler {
                     debug!(peer =% self.connection.peer_id(), "Shutting down at expiration");
                     self.connection.close();
                     break;
-                },
-                complete => break,
+                }
             }
         }
 

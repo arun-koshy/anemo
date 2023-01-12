@@ -137,6 +137,7 @@ impl ConnectionManager {
                             self.handle_connect_request(address, peer_id, oneshot);
                         }
                         ConnectionManagerRequest::Shutdown(oneshot) => {
+                            info!("Received shutdown signal for network");
                             shutdown_notifier = Some(oneshot);
                             break;
                         }
@@ -168,15 +169,23 @@ impl ConnectionManager {
 
     // Proceed through a graceful shutdown process that will leave the underlying socket
     // immediately re-bindable.
+    #[instrument(
+        name = "shutdown",
+        skip(self),
+        fields(peer = %self.endpoint.peer_id().short_display(4))
+    )]
     async fn shutdown(mut self) {
+        info!("Starting the shutdown process");
         // Close the quinn endpoint. This starts the process of gracefully shutting down all
         // connections, notifying the remote side of the endpoint's closure.
         self.endpoint.close();
 
         // Terminate any in-progress pending connections
+        info!("Terminating in progress pending connections");
         self.pending_connections.shutdown().await;
 
         // Wait for all connection handlers to terminate
+        info!("Wait for all connection handlers to terminate");
         while self.connection_handlers.join_next().await.is_some() {}
         // At this point we shouldn't have any active peers
         assert!(
@@ -185,6 +194,7 @@ impl ConnectionManager {
         );
 
         // wait for the endpoint to be idle
+        info!("Wait for the endpoint to be idle");
         self.endpoint.wait_idle().await;
 
         // This is a small hack in order to ensure that the underlying socket we're bound to is

@@ -3,7 +3,7 @@ use crate::{
     PeerId, Result,
 };
 use pkcs8::EncodePrivateKey;
-use quinn::VarInt;
+use quinn::{congestion, VarInt};
 use rcgen::{CertificateParams, KeyPair, SignatureAlgorithm};
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
@@ -341,6 +341,18 @@ impl QuicConfig {
         if let Some(keep_alive_interval) = self.keep_alive_interval_ms.map(Duration::from_millis) {
             config.keep_alive_interval(Some(keep_alive_interval));
         }
+
+        config.packet_threshold(6);
+        config.time_threshold(3.0);
+        config.persistent_congestion_threshold(6);
+        config.datagram_receive_buffer_size(Some(100 << 20));
+        config.datagram_send_buffer_size(100 << 20);
+
+        let mut bbr_config = congestion::BbrConfig::default();
+        bbr_config.max_datagram_size(1 << 20);
+        bbr_config.initial_window(4 << 20);
+        bbr_config.minimum_window(4 << 20);
+        config.congestion_controller_factory(Arc::new(bbr_config));
 
         config
     }

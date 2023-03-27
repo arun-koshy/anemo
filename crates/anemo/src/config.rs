@@ -348,11 +348,7 @@ impl QuicConfig {
         config.datagram_receive_buffer_size(Some(100 << 20));
         config.datagram_send_buffer_size(100 << 20);
 
-        let mut bbr_config = congestion::BbrConfig::default();
-        bbr_config.max_datagram_size(1 << 20);
-        bbr_config.initial_window(4 << 20);
-        bbr_config.minimum_window(4 << 20);
-        config.congestion_controller_factory(Arc::new(bbr_config));
+        config.congestion_controller_factory(Arc::new(congestion::NewRenoConfig::default()));
 
         config
     }

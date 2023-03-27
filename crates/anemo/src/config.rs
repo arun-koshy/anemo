@@ -348,7 +348,10 @@ impl QuicConfig {
         config.datagram_receive_buffer_size(Some(100 << 20));
         config.datagram_send_buffer_size(100 << 20);
 
-        config.congestion_controller_factory(Arc::new(congestion::NewRenoConfig::default()));
+        let mut cc_config = congestion::NewRenoConfig::default();
+        cc_config.minimum_window(1 << 20);
+        cc_config.loss_reduction_factor(0.8);
+        config.congestion_controller_factory(Arc::new(cc_config));
 
         config
     }

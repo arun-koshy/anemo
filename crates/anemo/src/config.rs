@@ -342,15 +342,15 @@ impl QuicConfig {
             config.keep_alive_interval(Some(keep_alive_interval));
         }
 
-        config.packet_threshold(6);
-        config.time_threshold(3.0);
-        config.persistent_congestion_threshold(6);
-        config.datagram_receive_buffer_size(Some(100 << 20));
-        config.datagram_send_buffer_size(100 << 20);
+        // config.packet_threshold(6);
+        // config.time_threshold(3.0);
+        // config.persistent_congestion_threshold(6);
+        // config.datagram_receive_buffer_size(Some(100 << 20));
+        // config.datagram_send_buffer_size(100 << 20);
 
         let mut cc_config = congestion::NewRenoConfig::default();
-        cc_config.minimum_window(1 << 20);
-        cc_config.loss_reduction_factor(0.8);
+        cc_config.minimum_window(256 << 10);
+        // cc_config.loss_reduction_factor(0.8);
         config.congestion_controller_factory(Arc::new(cc_config));
 
         config

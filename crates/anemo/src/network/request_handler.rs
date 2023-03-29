@@ -24,6 +24,7 @@ pub(crate) struct InboundRequestHandler {
 
     service: BoxCloneService<Request<Bytes>, Response<Bytes>, Infallible>,
     active_peers: ActivePeers,
+    handler_runtime: tokio::runtime::Handle,
 }
 
 impl InboundRequestHandler {
@@ -32,12 +33,14 @@ impl InboundRequestHandler {
         connection: Connection,
         service: BoxCloneService<Request<Bytes>, Response<Bytes>, Infallible>,
         active_peers: ActivePeers,
+        handler_runtime: tokio::runtime::Handle,
     ) -> Self {
         Self {
             config,
             connection,
             service,
             active_peers,
+            handler_runtime,
         }
     }
 
@@ -64,7 +67,7 @@ impl InboundRequestHandler {
                         Ok((bi_tx, bi_rx)) => {
                             trace!("incoming bi stream! {}", bi_tx.id());
                             let request_handler =
-                                BiStreamRequestHandler::new(&self.config, self.connection.clone(), self.service.clone(), bi_tx, bi_rx);
+                                BiStreamRequestHandler::new(&self.config, self.connection.clone(), self.service.clone(), bi_tx, bi_rx, self.handler_runtime.clone());
                             inflight_requests.spawn(request_handler.handle());
                         }
                         Err(e) => {
@@ -103,6 +106,31 @@ impl InboundRequestHandler {
     }
 }
 
+// Cribbed from:
+// https://github.com/MystenLabs/sui/blob/21cfd709547146c1968e6b76da5502158fc3cb78/narwhal/network/src/lib.rs#L29
+#[derive(Debug)]
+#[must_use]
+pub struct CancelOnDropHandler<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for CancelOnDropHandler<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl<T> std::future::Future for CancelOnDropHandler<T> {
+    type Output = T;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        use futures::future::FutureExt;
+        // If the task panics just propagate it up
+        self.0.poll_unpin(cx).map(Result::unwrap)
+    }
+}
+
 /// Handles a single incoming request from a peer. It receives the request, forwards it
 /// to the service for processing and the sends back to peer the response.
 struct BiStreamRequestHandler {
@@ -110,6 +138,7 @@ struct BiStreamRequestHandler {
     service: BoxCloneService<Request<Bytes>, Response<Bytes>, Infallible>,
     send_stream: FramedWrite<SendStream, LengthDelimitedCodec>,
     recv_stream: FramedRead<RecvStream, LengthDelimitedCodec>,
+    runtime: tokio::runtime::Handle,
 }
 
 impl BiStreamRequestHandler {
@@ -119,12 +148,14 @@ impl BiStreamRequestHandler {
         service: BoxCloneService<Request<Bytes>, Response<Bytes>, Infallible>,
         send_stream: SendStream,
         recv_stream: RecvStream,
+        runtime: tokio::runtime::Handle,
     ) -> Self {
         Self {
             connection,
             service,
             send_stream: FramedWrite::new(send_stream, network_message_frame_codec(config)),
             recv_stream: FramedRead::new(recv_stream, network_message_frame_codec(config)),
+            runtime,
         }
     }
 
@@ -159,7 +190,7 @@ impl BiStreamRequestHandler {
         // We also watch the send_stream and see if it has been prematurely terminated by the
         // remote side indicating that this RPC was canceled.
         let response = {
-            let handler = self.service.oneshot(request);
+            let handler = CancelOnDropHandler(self.runtime.spawn(self.service.oneshot(request)));
             let stopped = self.send_stream.get_mut().stopped();
             tokio::select! {
                 response = handler => response.expect("Infallible"),

@@ -158,15 +158,21 @@ impl Builder {
                 .service(service)
                 .boxed_clone();
 
+            let handler_rt = tokio::runtime::Runtime::new().unwrap();
             let (connection_manager, connection_manager_handle) = ConnectionManager::new(
                 config.clone(),
                 endpoint.clone(),
                 active_peers,
                 known_peers.clone(),
                 service,
+                handler_rt.handle().clone(),
             );
 
-            tokio::spawn(connection_manager.start());
+            std::thread::spawn(move || { 
+                let _handler_rt = handler_rt; // move into thread
+                let cm_rt = tokio::runtime::Runtime::new().unwrap();
+                cm_rt.block_on(connection_manager.start());
+            });
 
             NetworkInner {
                 config,

@@ -48,6 +48,7 @@ pub(crate) struct ConnectionManager {
 
     /// Handles to the request handlers for all current connections.
     connection_handlers: JoinSet<()>,
+    handler_runtime: tokio::runtime::Handle,
 
     /// A map of all the inflight attempts to establish outbound connections started internally due
     /// to a peer being configured as a KnownPeer.
@@ -73,6 +74,7 @@ impl ConnectionManager {
         active_peers: ActivePeers,
         known_peers: KnownPeers,
         service: BoxCloneService<Request<Bytes>, Response<Bytes>, Infallible>,
+        handler_runtime: tokio::runtime::Handle,
     ) -> (Self, mpsc::Sender<ConnectionManagerRequest>) {
         let (sender, receiver) = mpsc::channel(config.connection_manager_channel_capacity());
         (
@@ -82,6 +84,7 @@ impl ConnectionManager {
                 mailbox: receiver,
                 pending_connections: JoinSet::new(),
                 connection_handlers: JoinSet::new(),
+                handler_runtime,
                 pending_dials: HashMap::default(),
                 dial_backoff_states: HashMap::default(),
                 active_peers,
@@ -210,6 +213,7 @@ impl ConnectionManager {
                 new_connection,
                 self.service.clone(),
                 self.active_peers.clone(),
+                self.handler_runtime.clone(),
             );
 
             // TODO think about removing the need to pass in the active set of peers to the
@@ -799,6 +803,7 @@ mod tests {
             ActivePeers::new(1),
             Default::default(),
             echo_service(),
+            tokio::runtime::Handle::current(),
         );
 
         connection_manager.shutdown().await;

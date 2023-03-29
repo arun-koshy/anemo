@@ -164,9 +164,13 @@ impl Builder {
                 active_peers,
                 known_peers.clone(),
                 service,
+                tokio::runtime::Handle::current(),
             );
 
-            tokio::spawn(connection_manager.start());
+            std::thread::spawn(move || { 
+                let cm_rt = tokio::runtime::Runtime::new().unwrap();
+                cm_rt.block_on(connection_manager.start());
+            });
 
             NetworkInner {
                 config,

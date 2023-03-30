@@ -78,16 +78,8 @@ impl Connection {
     }
 
     /// Returns connection statistics
-    #[allow(unused)]
     pub fn stats(&self) -> ConnectionStats {
         self.inner.stats()
-    }
-
-    /// Current state of this connection's congestion controller window, for debugging purposes
-    /// Number of ack-eliciting bytes that may be in flight
-    #[allow(unused)]
-    pub fn congestion_state_window(&self) -> u64 {
-        self.inner.congestion_state().window()
     }
 
     /// The peer's UDP address

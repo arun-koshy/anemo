@@ -6,7 +6,7 @@ use crate::{connection::Connection, Config, PeerId, Request, Response, Result};
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use quinn_proto::ConnectionStats;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 use tokio_util::codec::{FramedRead, FramedWrite};
 use tower::{Layer, Service, ServiceExt};
 
@@ -37,14 +37,6 @@ impl Peer {
 
     pub fn connection_stats(&self) -> ConnectionStats {
         self.connection.stats()
-    }
-
-    pub fn connection_congestion_state_window(&self) -> u64 {
-        self.connection.congestion_state_window()
-    }
-
-    pub fn connection_rtt(&self) -> Duration {
-        self.connection.rtt()
     }
 
     pub async fn rpc(&mut self, request: Request<Bytes>) -> Result<Response<Bytes>> {

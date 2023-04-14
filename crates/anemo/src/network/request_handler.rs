@@ -49,7 +49,7 @@ impl InboundRequestHandler {
 
         let mut inflight_requests = tokio::task::JoinSet::new();
 
-        loop {
+        let close_reason = loop {
             tokio::select! {
                 // anemo does not currently use uni streams so we can
                 // just ignore and drop the stream
@@ -58,7 +58,7 @@ impl InboundRequestHandler {
                         Ok(recv_stream) => trace!("incoming uni stream! {}", recv_stream.id()),
                         Err(e) => {
                             trace!("error listening for incoming uni streams: {e}");
-                            break;
+                            break e;
                         }
                     }
                 },
@@ -72,7 +72,7 @@ impl InboundRequestHandler {
                         }
                         Err(e) => {
                             trace!("error listening for incoming bi streams: {e}");
-                            break;
+                            break e;
                         }
                     }
                 },
@@ -83,7 +83,7 @@ impl InboundRequestHandler {
                         Ok(datagram) => trace!("incoming datagram of length: {}", datagram.len()),
                         Err(e) => {
                             trace!("error listening for datagrams: {e}");
-                            break;
+                            break e;
                         }
                     }
                 },
@@ -92,12 +92,12 @@ impl InboundRequestHandler {
                     completed_request.unwrap();
                 },
             }
-        }
+        };
 
         self.active_peers.remove_with_stable_id(
             self.connection.peer_id(),
             self.connection.stable_id(),
-            crate::types::DisconnectReason::ConnectionLost,
+            crate::types::DisconnectReason::from_quinn_error(&close_reason),
         );
 
         inflight_requests.shutdown().await;

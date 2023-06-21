@@ -1,5 +1,5 @@
 use crate::{
-    config::EndpointConfig,
+    config::{EndpointConfig, TransportConfig},
     endpoint::Endpoint,
     middleware::{add_extension::AddExtensionLayer, timeout},
     types::{Address, DisconnectReason, PeerEvent},
@@ -127,90 +127,107 @@ impl Builder {
         <T as Service<Request<Bytes>>>::Future: Send + 'static,
     {
         let config = self.config.unwrap_or_default();
-        let quic_config = config.quic.clone().unwrap_or_default();
+        let transport_config = config.transport.clone().unwrap_or_default();
         let primary_server_name = self.server_name.unwrap();
         let alternate_server_name = self.alternate_server_name;
         let private_key = self.private_key.unwrap();
 
         let endpoint_config = EndpointConfig::builder()
-            .transport_config(config.transport_config())
+            .transport_config(&transport_config)
             .server_name(primary_server_name)
             .alternate_server_name(alternate_server_name)
             .private_key(private_key)
             .build()?;
 
-        let addrs: Vec<_> = self.bind_address.to_socket_addrs()?.collect();
-        let socket = (|| {
-            let mut result = Err(anyhow!("no addresses to bind to"));
-            for addr in addrs.iter() {
-                let socket =
-                    Socket::new(Domain::for_address(*addr), Type::DGRAM, Some(Protocol::UDP))?;
-                result = socket
-                    .bind(&socket2::SockAddr::from(*addr))
-                    .map_err(|e| e.into());
-                if let Ok(()) = result {
-                    return Ok(socket);
-                }
-            }
-            Err(result.unwrap_err())
-        })()?;
-        let socket_send_buf_size = if let Some(send_buffer_size) =
-            quic_config.socket_send_buffer_size
-        {
-            let result = socket.set_send_buffer_size(send_buffer_size);
-            if let Err(e) = result {
-                if quic_config.allow_failed_socket_buffer_size_setting {
-                    warn!("failed to set socket send buffer size to {send_buffer_size}: {e}",);
-                } else {
-                    return Err(e.into());
-                }
-            }
-            let buf_size = socket.send_buffer_size()?;
-            if buf_size < send_buffer_size {
-                // Linux doubles requested size, so allow anything greater.
-                let msg = format!(
+        let mut socket_send_buf_size = 0;
+        let mut socket_receive_buf_size = 0;
+        let endpoint = match transport_config {
+            TransportConfig::Quic(quic_config) => {
+                let addrs: Vec<_> = self.bind_address.to_socket_addrs()?.collect();
+                let socket = (|| {
+                    let mut result = Err(anyhow!("no addresses to bind to"));
+                    for addr in addrs.iter() {
+                        let socket = Socket::new(
+                            Domain::for_address(*addr),
+                            Type::DGRAM,
+                            Some(Protocol::UDP),
+                        )?;
+                        result = socket
+                            .bind(&socket2::SockAddr::from(*addr))
+                            .map_err(|e| e.into());
+                        if let Ok(()) = result {
+                            return Ok(socket);
+                        }
+                    }
+                    Err(result.unwrap_err())
+                })()?;
+                socket_send_buf_size = if let Some(send_buffer_size) =
+                    quic_config.socket_send_buffer_size
+                {
+                    let result = socket.set_send_buffer_size(send_buffer_size);
+                    if let Err(e) = result {
+                        if quic_config.allow_failed_socket_buffer_size_setting {
+                            warn!(
+                                "failed to set socket send buffer size to {send_buffer_size}: {e}",
+                            );
+                        } else {
+                            return Err(e.into());
+                        }
+                    }
+                    let buf_size = socket.send_buffer_size()?;
+                    if buf_size < send_buffer_size {
+                        // Linux doubles requested size, so allow anything greater.
+                        let msg = format!(
                     "expected socket send buffer size to be at least {send_buffer_size}, got {buf_size}"
                 );
-                if quic_config.allow_failed_socket_buffer_size_setting {
-                    warn!(msg);
+                        if quic_config.allow_failed_socket_buffer_size_setting {
+                            warn!(msg);
+                        } else {
+                            return Err(anyhow!(msg));
+                        }
+                    }
+                    buf_size
                 } else {
-                    return Err(anyhow!(msg));
-                }
-            }
-            buf_size
-        } else {
-            socket.send_buffer_size()?
-        };
-        let socket_receive_buf_size = if let Some(receive_buffer_size) =
-            quic_config.socket_receive_buffer_size
-        {
-            let result = socket.set_recv_buffer_size(receive_buffer_size);
-            if let Err(e) = result {
-                if quic_config.allow_failed_socket_buffer_size_setting {
-                    warn!("failed to set socket receive buffer size to {receive_buffer_size}: {e}",);
-                } else {
-                    return Err(e.into());
-                }
-            }
-            let buf_size = socket.recv_buffer_size()?;
-            if buf_size < receive_buffer_size {
-                // Linux doubles requested size, so allow anything greater.
-                let msg = format!(
+                    socket.send_buffer_size()?
+                };
+                socket_receive_buf_size = if let Some(receive_buffer_size) =
+                    quic_config.socket_receive_buffer_size
+                {
+                    let result = socket.set_recv_buffer_size(receive_buffer_size);
+                    if let Err(e) = result {
+                        if quic_config.allow_failed_socket_buffer_size_setting {
+                            warn!("failed to set socket receive buffer size to {receive_buffer_size}: {e}",);
+                        } else {
+                            return Err(e.into());
+                        }
+                    }
+                    let buf_size = socket.recv_buffer_size()?;
+                    if buf_size < receive_buffer_size {
+                        // Linux doubles requested size, so allow anything greater.
+                        let msg = format!(
                     "expected socket receive buffer size to be at least {receive_buffer_size}, got {buf_size}",
                 );
-                if quic_config.allow_failed_socket_buffer_size_setting {
-                    warn!(msg);
+                        if quic_config.allow_failed_socket_buffer_size_setting {
+                            warn!(msg);
+                        } else {
+                            return Err(anyhow!(msg));
+                        }
+                    }
+                    buf_size
                 } else {
-                    return Err(anyhow!(msg));
-                }
+                    socket.recv_buffer_size()?
+                };
+
+                Endpoint::new_quic(endpoint_config, socket.into())?
             }
-            buf_size
-        } else {
-            socket.recv_buffer_size()?
+            TransportConfig::Tls(_tls) => {
+                let tcp_listener = std::net::TcpListener::bind(self.bind_address)?;
+                Endpoint::new_tls(
+                    endpoint_config,
+                    tokio::net::TcpListener::from_std(tcp_listener)?,
+                )?
+            }
         };
-
-        let endpoint = Endpoint::new(endpoint_config, socket.into())?;
-
         let config = Arc::new(config);
         let endpoint = Arc::new(endpoint);
         let active_peers = ActivePeers::new(config.peer_event_broadcast_channel_capacity());

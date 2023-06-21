@@ -2,6 +2,7 @@ use crate::{
     crypto::{CertVerifier, ExpectedCertVerifier},
     PeerId, Result,
 };
+use anyhow::anyhow;
 use pkcs8::EncodePrivateKey;
 use quinn::VarInt;
 use rcgen::{CertificateParams, KeyPair, SignatureAlgorithm};
@@ -13,9 +14,11 @@ use std::{sync::Arc, time::Duration};
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
 pub struct Config {
-    /// Configuration for the underlying QUIC transport.
+    /// Configuration for transport layer.
+    ///
+    /// If unspecified, uses default QUIC configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub quic: Option<QuicConfig>,
+    pub transport: Option<TransportConfig>,
 
     /// Size of the internal `ConnectionManager`s mailbox.
     ///
@@ -122,7 +125,21 @@ pub struct Config {
     pub shutdown_idle_timeout_ms: Option<u64>,
 }
 
-/// Configuration for the underlying QUIC transport.
+/// Configuration for the transport layer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TransportConfig {
+    Quic(QuicConfig),
+    Tls(TlsConfig),
+}
+
+impl Default for TransportConfig {
+    fn default() -> Self {
+        Self::Quic(QuicConfig::default())
+    }
+}
+
+/// Configuration for QUIC transport.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
@@ -206,14 +223,13 @@ pub struct QuicConfig {
     pub allow_failed_socket_buffer_size_setting: bool,
 }
 
-impl Config {
-    pub(crate) fn transport_config(&self) -> quinn::TransportConfig {
-        self.quic
-            .as_ref()
-            .map(QuicConfig::transport_config)
-            .unwrap_or_default()
-    }
+/// Configuration for TLS transport.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub struct TlsConfig {}
 
+impl Config {
     pub(crate) fn connection_manager_channel_capacity(&self) -> usize {
         const CONNECTION_MANAGER_CHANNEL_CAPACITY: usize = 128;
 
@@ -361,7 +377,7 @@ pub(crate) struct EndpointConfigBuilder {
     /// initiating outbound connections.
     pub alternate_server_name: Option<String>,
 
-    pub transport_config: Option<quinn::TransportConfig>,
+    pub transport_config: Option<InnerTransportConfig>,
 }
 
 impl EndpointConfigBuilder {
@@ -379,8 +395,13 @@ impl EndpointConfigBuilder {
         self
     }
 
-    pub fn transport_config(mut self, transport_config: quinn::TransportConfig) -> Self {
-        self.transport_config = Some(transport_config);
+    pub fn transport_config(mut self, transport_config: &TransportConfig) -> Self {
+        self.transport_config = Some(match transport_config {
+            TransportConfig::Quic(quic) => {
+                InnerTransportConfig::Quic(Arc::new(quic.transport_config()))
+            }
+            TransportConfig::Tls(_tls) => InnerTransportConfig::Tls,
+        });
         self
     }
 
@@ -408,10 +429,13 @@ impl EndpointConfigBuilder {
 
         // Derive our quic reset key from our private key using an HKDF
         let reset_key = crate::crypto::construct_reset_key(&keypair.secret_key);
-        let quinn_endpoint_config = quinn::EndpointConfig::new(Arc::new(reset_key));
+        let transport_endpoint_config =
+            TransportEndpointConfig::Quic(quinn::EndpointConfig::new(Arc::new(reset_key)));
 
         let primary_server_name = self.server_name.unwrap();
-        let transport_config = Arc::new(self.transport_config.unwrap_or_default());
+        let transport_config = self.transport_config.unwrap_or_else(|| {
+            InnerTransportConfig::Quic(Arc::new(quinn::TransportConfig::default()))
+        });
 
         let cert_verifier = Arc::new(CertVerifier {
             server_names: vec![primary_server_name.clone()],
@@ -424,7 +448,7 @@ impl EndpointConfigBuilder {
             primary_certificate.clone(),
             pkcs8_der.clone(),
             cert_verifier.clone(),
-            transport_config.clone(),
+            &transport_config,
         )?;
 
         let alternate_server_name = self.alternate_server_name;
@@ -442,14 +466,14 @@ impl EndpointConfigBuilder {
                     ],
                     pkcs8_der.clone(),
                     cert_verifier,
-                    transport_config.clone(),
+                    &transport_config,
                 )
             }
             _ => Self::server_config(
                 vec![(primary_server_name.clone(), primary_certificate.clone())],
                 pkcs8_der.clone(),
                 cert_verifier,
-                transport_config.clone(),
+                &transport_config,
             ),
         }?;
 
@@ -459,11 +483,11 @@ impl EndpointConfigBuilder {
             peer_id,
             client_certificate: primary_certificate,
             pkcs8_der,
-            quinn_server_config: server_config,
-            quinn_client_config: client_config,
+            server_config,
+            client_config,
             server_name: primary_server_name,
             transport_config,
-            quinn_endpoint_config,
+            transport_endpoint_config,
         })
     }
 
@@ -482,8 +506,8 @@ impl EndpointConfigBuilder {
         certs: Vec<(String, rustls::Certificate)>,
         pkcs8_der: rustls::PrivateKey,
         cert_verifier: Arc<CertVerifier>,
-        transport_config: Arc<quinn::TransportConfig>,
-    ) -> Result<quinn::ServerConfig> {
+        transport_config: &InnerTransportConfig,
+    ) -> Result<ServerConfig> {
         let mut server_cert_resolver = rustls::server::ResolvesServerCertUsingSni::new();
         let key = rustls::sign::any_supported_type(&pkcs8_der)
             .map_err(|_| anyhow::anyhow!("invalid private key"))?;
@@ -497,9 +521,16 @@ impl EndpointConfigBuilder {
             .with_client_cert_verifier(cert_verifier)
             .with_cert_resolver(Arc::new(server_cert_resolver));
 
-        let mut server = quinn::ServerConfig::with_crypto(Arc::new(server_crypto));
-        server.transport = transport_config;
-        Ok(server)
+        match transport_config {
+            InnerTransportConfig::Quic(transport_config) => {
+                let mut server = quinn::ServerConfig::with_crypto(Arc::new(server_crypto));
+                server.transport = transport_config.clone();
+                Ok(ServerConfig::Quic(server))
+            }
+            InnerTransportConfig::Tls => Ok(ServerConfig::Tls(anemo_tls::ServerConfig::new(
+                server_crypto,
+            ))),
+        }
     }
 
     #[allow(deprecated)]
@@ -507,16 +538,93 @@ impl EndpointConfigBuilder {
         cert: rustls::Certificate,
         pkcs8_der: rustls::PrivateKey,
         cert_verifier: Arc<CertVerifier>,
-        transport_config: Arc<quinn::TransportConfig>,
-    ) -> Result<quinn::ClientConfig> {
+        transport_config: &InnerTransportConfig,
+    ) -> Result<ClientConfig> {
         let client_crypto = rustls::ClientConfig::builder()
             .with_safe_defaults()
             .with_custom_certificate_verifier(cert_verifier)
             .with_single_cert(vec![cert], pkcs8_der)?;
 
-        let mut client = quinn::ClientConfig::new(Arc::new(client_crypto));
-        client.transport_config(transport_config);
-        Ok(client)
+        match transport_config {
+            InnerTransportConfig::Quic(transport_config) => {
+                let mut client = quinn::ClientConfig::new(Arc::new(client_crypto));
+                client.transport_config(transport_config.clone());
+                Ok(ClientConfig::Quic(client))
+            }
+            InnerTransportConfig::Tls => Ok(ClientConfig::Tls(anemo_tls::ClientConfig::new(
+                client_crypto,
+            ))),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ServerConfig {
+    Quic(quinn::ServerConfig),
+    Tls(anemo_tls::ServerConfig),
+}
+
+impl ServerConfig {
+    pub fn try_quic(&self) -> Result<&quinn::ServerConfig> {
+        match self {
+            ServerConfig::Quic(config) => Ok(config),
+            _ => Err(anyhow!("called try_quic on a non-Quic ServerConfig")),
+        }
+    }
+    pub fn try_tls(&self) -> Result<&anemo_tls::ServerConfig> {
+        match self {
+            ServerConfig::Tls(config) => Ok(config),
+            _ => Err(anyhow!("called try_tls on a non-Tls ServerConfig")),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ClientConfig {
+    Quic(quinn::ClientConfig),
+    Tls(anemo_tls::ClientConfig),
+}
+
+impl ClientConfig {
+    pub fn try_quic(&self) -> Result<&quinn::ClientConfig> {
+        match self {
+            ClientConfig::Quic(inner) => Ok(inner),
+            _ => Err(anyhow!("called try_quic on a non-Quic ClientConfig")),
+        }
+    }
+    pub fn try_tls(&self) -> Result<&anemo_tls::ClientConfig> {
+        match self {
+            ClientConfig::Tls(inner) => Ok(inner),
+            _ => Err(anyhow!("called try_quic on a non-Quic ClientConfig")),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum InnerTransportConfig {
+    Quic(Arc<quinn::TransportConfig>),
+    Tls,
+}
+
+impl InnerTransportConfig {
+    pub fn try_quic(&self) -> Result<Arc<quinn::TransportConfig>> {
+        match self {
+            InnerTransportConfig::Quic(inner) => Ok(inner.clone()),
+            _ => Err(anyhow!("called try_quic on a non-Quic TransportConfig")),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum TransportEndpointConfig {
+    Quic(quinn::EndpointConfig),
+}
+
+impl TransportEndpointConfig {
+    pub fn as_quic(&self) -> &quinn::EndpointConfig {
+        match self {
+            TransportEndpointConfig::Quic(inner) => inner,
+        }
     }
 }
 
@@ -526,16 +634,16 @@ pub(crate) struct EndpointConfig {
     // Store client certificate for outbound connections initiation
     client_certificate: rustls::Certificate,
     pkcs8_der: rustls::PrivateKey,
-    quinn_server_config: quinn::ServerConfig,
-    quinn_client_config: quinn::ClientConfig,
+    server_config: ServerConfig,
+    client_config: ClientConfig,
 
     /// Note that the end-entity certificate must have the
     /// [Subject Alternative Name](https://tools.ietf.org/html/rfc6125#section-4.1)
     /// extension to describe, e.g., the valid DNS name.
     server_name: String,
 
-    transport_config: Arc<quinn::TransportConfig>,
-    quinn_endpoint_config: quinn::EndpointConfig,
+    transport_config: InnerTransportConfig,
+    transport_endpoint_config: TransportEndpointConfig,
 }
 
 impl EndpointConfig {
@@ -551,16 +659,16 @@ impl EndpointConfig {
         &self.server_name
     }
 
-    pub fn quinn_endpoint_config(&self) -> quinn::EndpointConfig {
-        self.quinn_endpoint_config.clone()
+    pub fn transport_endpoint_config(&self) -> &TransportEndpointConfig {
+        &self.transport_endpoint_config
     }
 
-    pub fn server_config(&self) -> &quinn::ServerConfig {
-        &self.quinn_server_config
+    pub fn server_config(&self) -> &ServerConfig {
+        &self.server_config
     }
 
-    pub fn client_config(&self) -> &quinn::ClientConfig {
-        &self.quinn_client_config
+    pub fn client_config(&self) -> &ClientConfig {
+        &self.client_config
     }
 
     // TODO: remove #[allow(deprecated)] once we upgrade rustls
@@ -568,10 +676,7 @@ impl EndpointConfig {
     // deprecated. Before that happens, we use the attribute to
     // keep clippy happy.
     #[allow(deprecated)]
-    pub fn client_config_with_expected_server_identity(
-        &self,
-        peer_id: PeerId,
-    ) -> quinn::ClientConfig {
+    pub fn client_config_with_expected_server_identity(&self, peer_id: PeerId) -> ClientConfig {
         let server_cert_verifier = ExpectedCertVerifier(
             CertVerifier {
                 server_names: vec![self.server_name().into()],
@@ -587,9 +692,22 @@ impl EndpointConfig {
             )
             .unwrap();
 
-        let mut client = quinn::ClientConfig::new(Arc::new(client_crypto));
-        client.transport_config(self.transport_config.clone());
-        client
+        match self.client_config {
+            ClientConfig::Quic(_) => {
+                let mut client = quinn::ClientConfig::new(Arc::new(client_crypto));
+                client.transport_config(
+                    self.transport_config
+                        .try_quic()
+                        .expect("config variants must match")
+                        .clone(),
+                );
+                ClientConfig::Quic(client)
+            }
+            ClientConfig::Tls(_) => {
+                let client = anemo_tls::ClientConfig::new(client_crypto);
+                ClientConfig::Tls(client)
+            }
+        }
     }
 
     #[cfg(test)]

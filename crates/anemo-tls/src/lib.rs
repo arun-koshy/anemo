@@ -1,6 +1,13 @@
+use anyhow::Result;
+use futures_util::StreamExt;
 use std::{net::SocketAddr, sync::Arc};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::{
+    io::{ReadHalf, WriteHalf},
+    net::{TcpListener, TcpStream},
+    sync::Mutex,
+};
 use tokio_rustls::{TlsAcceptor, TlsStream};
+use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
 /// Configuration for outbound connections.
 #[derive(Debug, Clone)]
@@ -32,17 +39,120 @@ impl ServerConfig {
 /// A TLS connection.
 ///
 /// May be cloned to obtain another handle to the same connection.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Connection(ConnectionRef);
 
-#[derive(Debug, Clone)]
+impl Connection {
+    fn new(stream: TlsStream<TcpStream>, peer_address: SocketAddr, mode: yamux::Mode) -> Self {
+        let (_, state) = stream.get_ref();
+        let peer_identity = state.peer_certificates().map(|certs| certs[0].to_owned());
+
+        let (control, connection) = yamux::Control::new(yamux::Connection::new(
+            stream.compat(),
+            yamux::Config::default(),
+            mode,
+        ));
+
+        Self(ConnectionRef(Arc::new(ConnectionInner {
+            state: Mutex::new(ConnectionInnerState {
+                control,
+                connection,
+            }),
+            peer_address,
+            peer_identity,
+        })))
+    }
+
+    pub fn peer_identity(&self) -> Option<&rustls::Certificate> {
+        self.0 .0.peer_identity.as_ref()
+    }
+
+    pub fn stable_id(&self) -> usize {
+        &*self.0 .0 as *const _ as usize
+    }
+
+    pub fn peer_address(&self) -> SocketAddr {
+        self.0 .0.peer_address
+    }
+
+    pub async fn open_stream(&self) -> Result<(SendStream, RecvStream)> {
+        let stream = self
+            .0
+             .0
+            .state
+            .lock()
+            .await
+            .control
+            .open_stream()
+            .await?
+            .compat();
+        let (read, write) = tokio::io::split(stream);
+        Ok((SendStream(write), RecvStream(read)))
+    }
+
+    pub async fn accept_stream(&self) -> Result<(SendStream, RecvStream)> {
+        let stream = self
+            .0
+             .0
+            .state
+            .lock()
+            .await
+            .connection
+            .next()
+            .await
+            .ok_or(anyhow::anyhow!("connection closed"))??
+            .compat();
+        let (read, write) = tokio::io::split(stream);
+        Ok((SendStream(write), RecvStream(read)))
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct ConnectionRef(Arc<ConnectionInner>);
 
-#[derive(Debug)]
 pub(crate) struct ConnectionInner {
-    // TODO: use or remove.
-    _stream: TlsStream<TcpStream>,
-    _peer_address: SocketAddr,
+    state: Mutex<ConnectionInnerState>,
+    peer_address: SocketAddr,
+    peer_identity: Option<rustls::Certificate>,
+}
+
+pub(crate) struct ConnectionInnerState {
+    control: yamux::Control,
+    connection: yamux::ControlledConnection<Compat<TlsStream<TcpStream>>>,
+}
+
+// TODO-MUSTFIX: is it necessary to add a Drop handler to close anything here?
+pub struct SendStream(WriteHalf<Compat<yamux::Stream>>);
+
+impl std::ops::Deref for SendStream {
+    type Target = WriteHalf<Compat<yamux::Stream>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SendStream {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+// TODO-MUSTFIX: is it necessary to add a Drop handler to close anything here?
+pub struct RecvStream(ReadHalf<Compat<yamux::Stream>>);
+
+impl std::ops::Deref for RecvStream {
+    type Target = ReadHalf<Compat<yamux::Stream>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for RecvStream {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 /// A TLS endpoint.
@@ -60,10 +170,7 @@ impl Endpoint {
     pub fn new(config: ServerConfig, listener: TcpListener) -> Self {
         let acceptor = TlsAcceptor::from(config.tls);
         Self {
-            inner: EndpointRef(Arc::new(EndpointInner {
-                listener,
-                acceptor,
-            })),
+            inner: EndpointRef(Arc::new(EndpointInner { listener, acceptor })),
         }
     }
 
@@ -87,21 +194,22 @@ impl Endpoint {
         // let server_name = rustls::ServerName::IpAddress(addr.ip());
 
         let stream = connector.connect(parsed_server_name, stream).await?;
-
-        Ok(Connection(ConnectionRef(Arc::new(ConnectionInner {
-            _peer_address: addr,
-            _stream: TlsStream::Client(stream),
-        }))))
+        Ok(Connection::new(
+            TlsStream::Client(stream),
+            addr,
+            yamux::Mode::Client,
+        ))
     }
 
     pub async fn accept(&self) -> Result<Connection, std::io::Error> {
         // TODO-MUSTFIX add support for 'closed' endpoint.
         let (stream, peer_address) = self.inner.0.listener.accept().await?;
         let stream = self.inner.0.acceptor.accept(stream).await?;
-        Ok(Connection(ConnectionRef(Arc::new(ConnectionInner {
-            _peer_address: peer_address,
-            _stream: TlsStream::Server(stream),
-        }))))
+        Ok(Connection::new(
+            TlsStream::Server(stream),
+            peer_address,
+            yamux::Mode::Server,
+        ))
     }
 }
 

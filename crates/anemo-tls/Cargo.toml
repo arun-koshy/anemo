@@ -7,6 +7,9 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.56"
+futures-util = "0.3.28"
 rustls = { version = "0.21.2", features = ["dangerous_configuration"] }
 tokio = { version = "1.17.0", features = ["sync", "rt", "macros", "io-util"] }
 tokio-rustls = { version = "0.24.1", features = ["dangerous_configuration"] }
+tokio-util = { version = "0.7.8", features = ["compat"] }
+yamux = "0.11.1"

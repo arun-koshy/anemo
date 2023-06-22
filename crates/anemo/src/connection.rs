@@ -132,11 +132,6 @@ impl Connection {
             .await
             .map(|(send, recv)| (SendStream(send), recv))
     }
-
-    /// Receive an application datagram
-    pub async fn read_datagram(&self) -> Result<bytes::Bytes, ConnectionError> {
-        self.inner.read_datagram().await
-    }
 }
 
 impl fmt::Debug for Connection {

@@ -73,17 +73,6 @@ impl InboundRequestHandler {
                         }
                     }
                 },
-                // anemo does not currently use datagrams so we can
-                // just ignore them
-                datagram = self.connection.read_datagram() => {
-                    match datagram {
-                        Ok(datagram) => trace!("incoming datagram of length: {}", datagram.len()),
-                        Err(e) => {
-                            trace!("error listening for datagrams: {e}");
-                            break e;
-                        }
-                    }
-                },
                 Some(completed_request) = inflight_requests.join_next() => {
                     match completed_request {
                         Ok(()) => {

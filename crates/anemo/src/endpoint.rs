@@ -3,11 +3,9 @@ use crate::{
     config::EndpointConfig, connection::Connection, types::Address, ConnectionOrigin, PeerId,
     Result,
 };
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use std::{
-    net::SocketAddr,
-};
 use tokio::time::timeout;
 use tracing::{trace, warn};
 

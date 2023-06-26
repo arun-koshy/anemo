@@ -1,13 +1,22 @@
 use anyhow::Result;
-use futures_util::StreamExt;
-use std::{net::SocketAddr, sync::Arc};
-use tokio::{
+use futures_util::{
     io::{ReadHalf, WriteHalf},
+    StreamExt,
+};
+use std::{
+    net::SocketAddr,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
+use tokio::{
     net::{TcpListener, TcpStream},
     sync::Mutex,
 };
 use tokio_rustls::{TlsAcceptor, TlsStream};
-use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
+use tokio_util::compat::{
+    Compat, FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt, TokioAsyncReadCompatExt,
+};
 
 /// Configuration for outbound connections.
 #[derive(Debug, Clone)]
@@ -45,6 +54,7 @@ pub struct Connection(ConnectionRef);
 impl Connection {
     fn new(stream: TlsStream<TcpStream>, peer_address: SocketAddr, mode: yamux::Mode) -> Self {
         let (_, state) = stream.get_ref();
+        // TODO-MUSTFIX can/should I do something here to guarantee this returns Some?
         let peer_identity = state.peer_certificates().map(|certs| certs[0].to_owned());
 
         let (control, connection) = yamux::Control::new(yamux::Connection::new(
@@ -76,18 +86,19 @@ impl Connection {
     }
 
     pub async fn open_stream(&self) -> Result<(SendStream, RecvStream)> {
-        let stream = self
-            .0
-             .0
-            .state
-            .lock()
-            .await
-            .control
-            .open_stream()
-            .await?
-            .compat();
-        let (read, write) = tokio::io::split(stream);
-        Ok((SendStream(write), RecvStream(read)))
+        let stream = self.0 .0.state.lock().await.control.open_stream().await?;
+        let display_str = stream.to_string();
+        let (read, write) = futures_util::AsyncReadExt::split(stream);
+        Ok((
+            SendStream {
+                stream: write.compat_write(),
+                display_str: display_str.to_owned(),
+            },
+            RecvStream {
+                stream: read.compat(),
+                display_str,
+            },
+        ))
     }
 
     pub async fn accept_stream(&self) -> Result<(SendStream, RecvStream)> {
@@ -100,10 +111,19 @@ impl Connection {
             .connection
             .next()
             .await
-            .ok_or(anyhow::anyhow!("connection closed"))??
-            .compat();
-        let (read, write) = tokio::io::split(stream);
-        Ok((SendStream(write), RecvStream(read)))
+            .ok_or(anyhow::anyhow!("connection closed"))??;
+        let display_str = stream.to_string();
+        let (read, write) = futures_util::AsyncReadExt::split(stream);
+        Ok((
+            SendStream {
+                stream: write.compat_write(),
+                display_str: display_str.to_owned(),
+            },
+            RecvStream {
+                stream: read.compat(),
+                display_str,
+            },
+        ))
     }
 }
 
@@ -122,36 +142,92 @@ pub(crate) struct ConnectionInnerState {
 }
 
 // TODO-MUSTFIX: is it necessary to add a Drop handler to close anything here?
-pub struct SendStream(WriteHalf<Compat<yamux::Stream>>);
+pub struct SendStream {
+    stream: Compat<WriteHalf<yamux::Stream>>,
+    display_str: String,
+}
+
+impl std::fmt::Display for SendStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display_str)
+    }
+}
 
 impl std::ops::Deref for SendStream {
-    type Target = WriteHalf<Compat<yamux::Stream>>;
+    type Target = Compat<WriteHalf<yamux::Stream>>;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.stream
     }
 }
 
 impl std::ops::DerefMut for SendStream {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        &mut self.stream
+    }
+}
+
+impl tokio::io::AsyncWrite for SendStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
     }
 }
 
 // TODO-MUSTFIX: is it necessary to add a Drop handler to close anything here?
-pub struct RecvStream(ReadHalf<Compat<yamux::Stream>>);
+pub struct RecvStream {
+    stream: Compat<ReadHalf<yamux::Stream>>,
+    display_str: String,
+}
+
+impl std::fmt::Display for RecvStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display_str)
+    }
+}
 
 impl std::ops::Deref for RecvStream {
-    type Target = ReadHalf<Compat<yamux::Stream>>;
+    type Target = Compat<ReadHalf<yamux::Stream>>;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.stream
     }
 }
 
 impl std::ops::DerefMut for RecvStream {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        &mut self.stream
+    }
+}
+
+impl tokio::io::AsyncRead for RecvStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_read(cx, buf)
+    }
+}
+
+impl futures::AsyncRead for RecvStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(self.stream.get_mut()).poll_read(cx, buf)
     }
 }
 

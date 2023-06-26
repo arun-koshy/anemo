@@ -698,8 +698,7 @@ impl EndpointConfig {
                 client.transport_config(
                     self.transport_config
                         .try_quic()
-                        .expect("config variants must match")
-                        .clone(),
+                        .expect("config variants must match"),
                 );
                 ClientConfig::Quic(client)
             }

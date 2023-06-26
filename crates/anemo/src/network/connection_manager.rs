@@ -416,10 +416,9 @@ impl ConnectionManager {
         peer_id: Option<PeerId>,
         oneshot: oneshot::Sender<Result<PeerId>>,
     ) {
-        let target_address = address.clone();
         self.pending_connections.spawn(Self::dial_peer_task(
             self.endpoint.clone(),
-            target_address,
+            address,
             peer_id,
             oneshot,
             self.config.clone(),

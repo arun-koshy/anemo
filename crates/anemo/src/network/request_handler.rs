@@ -3,11 +3,10 @@ use super::{
     ActivePeers,
 };
 use crate::{
-    connection::{Connection, SendStream},
+    connection::{Connection, RecvStream, SendStream},
     Config, Request, Response, Result,
 };
 use bytes::Bytes;
-use quinn::RecvStream;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
@@ -50,19 +49,21 @@ impl InboundRequestHandler {
             tokio::select! {
                 // anemo does not currently use uni streams so we can
                 // just ignore and drop the stream
-                uni = self.connection.accept_uni() => {
-                    match uni {
-                        Ok(recv_stream) => trace!("incoming uni stream! {}", recv_stream.id()),
-                        Err(e) => {
-                            trace!("error listening for incoming uni streams: {e}");
-                            break e;
-                        }
-                    }
-                },
+                // TODO-MUSTFIX is it ok to just disable this? otherwise no way currently on TLS
+                // side to disambiguate between incoming uni and bi streams
+                // uni = self.connection.accept_uni() => {
+                //     match uni {
+                //         Ok(recv_stream) => trace!("incoming uni stream! {}", recv_stream),
+                //         Err(e) => {
+                //             trace!("error listening for incoming uni streams: {e}");
+                //             break e;
+                //         }
+                //     }
+                // },
                 bi = self.connection.accept_bi() => {
                     match bi {
                         Ok((bi_tx, bi_rx)) => {
-                            trace!("incoming bi stream! {}", bi_tx.id());
+                            trace!("incoming bi stream! {}", bi_tx);
                             let request_handler =
                                 BiStreamRequestHandler::new(&self.config, self.connection.clone(), self.service.clone(), bi_tx, bi_rx);
                             inflight_requests.spawn(request_handler.handle());
@@ -96,7 +97,7 @@ impl InboundRequestHandler {
         self.active_peers.remove_with_stable_id(
             self.connection.peer_id(),
             self.connection.stable_id(),
-            crate::types::DisconnectReason::from_quinn_error(&close_reason),
+            crate::types::DisconnectReason::from_connection_error(&close_reason),
         );
 
         inflight_requests.shutdown().await;

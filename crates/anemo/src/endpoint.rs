@@ -1,4 +1,5 @@
 use crate::config::ClientConfig;
+use crate::connection::ConnectionInner;
 use crate::{
     config::EndpointConfig, connection::Connection, types::Address, ConnectionOrigin, PeerId,
     Result,
@@ -112,28 +113,34 @@ impl Endpoint {
                 )?
                 .await
                 .map_err(anyhow::Error::from)
-                .and_then(|connection| Connection::new(connection, ConnectionOrigin::Outbound))
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "failed establishing {} connection: {e}",
-                        ConnectionOrigin::Outbound
+                .and_then(|connection| {
+                    Connection::new(
+                        ConnectionInner::Quic(connection),
+                        ConnectionOrigin::Outbound,
                     )
                 }),
-
             Transport::Tls(ref inner) => {
-                let _connection = inner
+                inner
                     .connect_with(
                         config.try_tls()?.to_owned(),
                         addr,
                         self.config.server_name(),
                     )
-                    .await?;
-                // TODO: implement unified connection interface for QUIC + TLS
-                // For now just drop this
-                Err(anyhow::anyhow!(
-                    "TLS connections are not yet supported, dropping connection"
-                ))
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .and_then(|connection| {
+                        Connection::new(
+                            ConnectionInner::Tls(connection),
+                            ConnectionOrigin::Outbound,
+                        )
+                    })
             }
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "failed establishing {} connection: {e}",
+                    ConnectionOrigin::Outbound
+                )
+            }),
         }
     }
 
@@ -204,29 +211,25 @@ impl Endpoint {
                             .await
                             .map_err(anyhow::Error::from)
                             .and_then(|connection| {
-                                Connection::new(connection, ConnectionOrigin::Inbound)
+                                Connection::new(
+                                    ConnectionInner::Quic(connection),
+                                    ConnectionOrigin::Inbound,
+                                )
                             }),
                     )
                 } else {
                     None
                 }
             }
-
-            Transport::Tls(ref inner) => {
-                Some(
-                    inner
-                        .accept()
-                        .await
-                        .map_err(anyhow::Error::from)
-                        .and_then(|_connection| {
-                            // TODO: implement unified connection interface for QUIC + TLS
-                            // For now just drop this
-                            Err(anyhow::anyhow!(
-                                "TLS connections are not yet supported, dropping connection"
-                            ))
-                        }),
-                )
-            }
+            Transport::Tls(ref inner) => Some(
+                inner
+                    .accept()
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .and_then(|connection| {
+                        Connection::new(ConnectionInner::Tls(connection), ConnectionOrigin::Inbound)
+                    }),
+            ),
         }
     }
 }
@@ -236,6 +239,7 @@ mod test {
     use super::*;
     use futures::{future::join, io::AsyncReadExt};
     use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
 
     #[tokio::test]
     async fn basic_endpoint() -> Result<()> {

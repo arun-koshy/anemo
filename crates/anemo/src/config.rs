@@ -703,10 +703,21 @@ impl EndpointConfig {
     }
 
     #[cfg(test)]
-    pub(crate) fn random(server_name: &str) -> Self {
+    pub(crate) fn random_quic(server_name: &str) -> Self {
         Self::builder()
             .random_private_key()
             .server_name(server_name)
+            .build()
+            .unwrap()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn random_tls(server_name: &str) -> Self {
+        let transport_config = TransportConfig::Tls(TlsConfig {});
+        Self::builder()
+            .random_private_key()
+            .server_name(server_name)
+            .transport_config(&transport_config)
             .build()
             .unwrap()
     }

@@ -249,7 +249,9 @@ impl SendStream {
     pub async fn finish(&mut self) -> Result<()> {
         match self {
             SendStream::Quic(stream) => stream.finish().await.map_err(Into::into),
-            SendStream::Tls(_stream) => Ok(()), // TODO-MUSTFIX: implement for TLS
+            SendStream::Tls(stream) => tokio::io::AsyncWriteExt::shutdown(stream)
+                .await
+                .map_err(Into::into),
         }
     }
 
@@ -259,7 +261,7 @@ impl SendStream {
             SendStream::Quic(stream) => {
                 let _ = stream.stopped().await;
             }
-            SendStream::Tls(_stream) => (), // TODO-MUSTFIX: is this possible for TLS
+            SendStream::Tls(_stream) => (), // TODO-MUSTFIX: is this possible for TLS/yamux
         }
     }
 }
@@ -275,21 +277,6 @@ impl Drop for SendStream {
         }
     }
 }
-
-// TODO-MUSTFIX can these be deleted?
-// impl std::ops::Deref for SendStream {
-//     type Target = quinn::SendStream;
-
-//     fn deref(&self) -> &Self::Target {
-//         &self.0
-//     }
-// }
-
-// impl std::ops::DerefMut for SendStream {
-//     fn deref_mut(&mut self) -> &mut Self::Target {
-//         &mut self.0
-//     }
-// }
 
 impl tokio::io::AsyncWrite for SendStream {
     fn poll_write(

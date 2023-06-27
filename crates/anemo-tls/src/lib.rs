@@ -11,7 +11,7 @@ use std::{
 };
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::Mutex,
+    sync::{mpsc, Mutex},
 };
 use tokio_rustls::{TlsAcceptor, TlsStream};
 use tokio_util::compat::{
@@ -63,14 +63,38 @@ impl Connection {
             mode,
         ));
 
+        // Weird quirk alert:
+        // yamux requires us to constantly drive the ControlledConnection or else new *outbound*
+        // streams will not be started, even if we never intend to accept inbound streams.
+        let (tx, rx) = mpsc::channel(1);
+        tokio::spawn(Self::yield_streams(connection, tx));
+
         Self(ConnectionRef(Arc::new(ConnectionInner {
-            state: Mutex::new(ConnectionInnerState {
-                control,
-                connection,
-            }),
+            state: Mutex::new(ConnectionInnerState { rx_streams: rx }),
+            control,
             peer_address,
             peer_identity,
         })))
+    }
+
+    async fn yield_streams(
+        mut connection: yamux::ControlledConnection<Compat<TlsStream<TcpStream>>>,
+        tx: mpsc::Sender<yamux::Stream>,
+    ) {
+        while let Some(stream) = connection.next().await {
+            match stream {
+                Ok(stream) => {
+                    if tx.send(stream).await.is_err() {
+                        // The receiver is gone, so we can stop.
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("yamux stream error: {}", e);
+                    break;
+                }
+            }
+        }
     }
 
     pub fn peer_identity(&self) -> Option<&rustls::Certificate> {
@@ -86,7 +110,7 @@ impl Connection {
     }
 
     pub async fn open_stream(&self) -> Result<(SendStream, RecvStream)> {
-        let stream = self.0 .0.state.lock().await.control.open_stream().await?;
+        let stream = self.0 .0.control.clone().open_stream().await?;
         let display_str = stream.to_string();
         let (read, write) = futures_util::AsyncReadExt::split(stream);
         Ok((
@@ -102,16 +126,17 @@ impl Connection {
     }
 
     pub async fn accept_stream(&self) -> Result<(SendStream, RecvStream)> {
+        // TODO-MUSTFIX: can this mutex be avoided?
         let stream = self
             .0
              .0
             .state
             .lock()
             .await
-            .connection
-            .next()
+            .rx_streams
+            .recv()
             .await
-            .ok_or(anyhow::anyhow!("connection closed"))??;
+            .ok_or(anyhow::anyhow!("connection closed"))?;
         let display_str = stream.to_string();
         let (read, write) = futures_util::AsyncReadExt::split(stream);
         Ok((
@@ -132,13 +157,13 @@ pub(crate) struct ConnectionRef(Arc<ConnectionInner>);
 
 pub(crate) struct ConnectionInner {
     state: Mutex<ConnectionInnerState>,
+    control: yamux::Control,
     peer_address: SocketAddr,
     peer_identity: Option<rustls::Certificate>,
 }
 
 pub(crate) struct ConnectionInnerState {
-    control: yamux::Control,
-    connection: yamux::ControlledConnection<Compat<TlsStream<TcpStream>>>,
+    rx_streams: mpsc::Receiver<yamux::Stream>,
 }
 
 // TODO-MUSTFIX: is it necessary to add a Drop handler to close anything here?
@@ -257,17 +282,15 @@ impl Endpoint {
         addr: std::net::SocketAddr,
         server_name: &str,
     ) -> std::io::Result<Connection> {
-        let connector = tokio_rustls::TlsConnector::from(config.tls.clone());
-        let stream = TcpStream::connect(&addr).await?;
-
-        // TODO-MUSTFIX does server_name work as DNS?
         let parsed_server_name = rustls::ServerName::try_from(server_name).map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!("invalid server_name: {server_name}"),
             )
         })?;
-        // let server_name = rustls::ServerName::IpAddress(addr.ip());
+
+        let connector = tokio_rustls::TlsConnector::from(config.tls.clone());
+        let stream = TcpStream::connect(&addr).await?;
 
         let stream = connector.connect(parsed_server_name, stream).await?;
         Ok(Connection::new(

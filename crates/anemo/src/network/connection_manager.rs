@@ -783,10 +783,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shutdown() {
+    async fn shutdown_quic() {
         let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         let address = socket.local_addr().unwrap();
-        let config = crate::config::EndpointConfig::random("test");
+        let config = crate::config::EndpointConfig::random_quic("test");
         let endpoint = Arc::new(Endpoint::new_quic(config, socket).unwrap());
         let (connection_manager, sender) = ConnectionManager::new(
             Default::default(),

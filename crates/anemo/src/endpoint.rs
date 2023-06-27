@@ -64,12 +64,6 @@ impl Endpoint {
         Ok(endpoint)
     }
 
-    #[cfg(test)]
-    fn new_quic_with_address<A: Into<Address>>(config: EndpointConfig, addr: A) -> Result<Self> {
-        let socket = std::net::UdpSocket::bind(addr.into())?;
-        Self::new_quic(config, socket)
-    }
-
     /// WARNING: TLS support is unstable, experimental, and incomplete.
     pub fn new_tls(config: EndpointConfig, listener: tokio::net::TcpListener) -> Result<Self> {
         let local_addr = listener.local_addr()?;
@@ -162,7 +156,7 @@ impl Endpoint {
         trace!("Closing endpoint");
         match self.transport {
             Transport::Quic(ref inner) => inner.close(0_u32.into(), b"endpoint closed"),
-            Transport::Tls(ref _inner) => (), // TODO: add close
+            Transport::Tls(ref _inner) => (), // TODO-MUSTFIX: add close
         }
     }
 
@@ -238,22 +232,44 @@ impl Endpoint {
 mod test {
     use super::*;
     use futures::{future::join, io::AsyncReadExt};
+    use rstest::*;
     use std::time::Duration;
     use tokio::io::AsyncWriteExt;
 
+    #[fixture]
+    async fn quic_endpoint() -> Endpoint {
+        let config = EndpointConfig::random_quic("test");
+        let socket = std::net::UdpSocket::bind("localhost:0").unwrap();
+        Endpoint::new_quic(config, socket).unwrap()
+    }
+
+    #[fixture]
+    async fn tls_endpoint() -> Endpoint {
+        let config = EndpointConfig::random_tls("test");
+        let listener = tokio::net::TcpListener::bind("localhost:0").await.unwrap();
+        Endpoint::new_tls(config, listener).unwrap()
+    }
+
+    #[rstest]
+    #[case::quic(quic_endpoint(), quic_endpoint())]
+    #[case::tls(tls_endpoint(), tls_endpoint())]
+    #[awt]
     #[tokio::test]
-    async fn basic_endpoint() -> Result<()> {
+    async fn basic_endpoint(
+        #[future]
+        #[case]
+        endpoint_1: Endpoint,
+        #[future]
+        #[case]
+        endpoint_2: Endpoint,
+    ) -> Result<()> {
         let _guard = crate::init_tracing_for_testing();
 
         let msg = b"hello";
-        let config_1 = EndpointConfig::random("test");
-        let endpoint_1 = Endpoint::new_quic_with_address(config_1, "localhost:0")?;
         let peer_id_1 = endpoint_1.config.peer_id();
 
         println!("1: {}", endpoint_1.local_addr());
 
-        let config_2 = EndpointConfig::random("test");
-        let endpoint_2 = Endpoint::new_quic_with_address(config_2, "localhost:0")?;
         let peer_id_2 = endpoint_2.config.peer_id();
         let addr_2 = endpoint_2.local_addr();
         println!("2: {}", endpoint_2.local_addr());
@@ -293,19 +309,26 @@ mod test {
 
     // Test to verify that multiple connections to the same endpoint can be open simultaneously.
     // While we don't currently allow for this, we may want to eventually enable/allow for it.
+    #[rstest]
+    #[case::quic(quic_endpoint(), quic_endpoint())]
+    #[case::tls(tls_endpoint(), tls_endpoint())]
+    #[awt]
     #[tokio::test]
-    async fn multiple_connections() -> Result<()> {
+    async fn multiple_connections(
+        #[future]
+        #[case]
+        endpoint_1: Endpoint,
+        #[future]
+        #[case]
+        endpoint_2: Endpoint,
+    ) -> Result<()> {
         let _guard = crate::init_tracing_for_testing();
 
         let msg = b"hello";
-        let config_1 = EndpointConfig::random("test");
-        let endpoint_1 = Endpoint::new_quic_with_address(config_1, "localhost:0")?;
         let peer_id_1 = endpoint_1.config.peer_id();
 
         println!("1: {}", endpoint_1.local_addr());
 
-        let config_2 = EndpointConfig::random("test");
-        let endpoint_2 = Endpoint::new_quic_with_address(config_2, "localhost:0")?;
         let peer_id_2 = endpoint_2.config.peer_id();
         let addr_2 = endpoint_2.local_addr();
         println!("2: {}", endpoint_2.local_addr());
@@ -371,16 +394,22 @@ mod test {
         Ok(())
     }
 
+    #[rstest]
+    #[case::quic(quic_endpoint(), quic_endpoint())]
+    #[case::tls(tls_endpoint(), tls_endpoint())]
+    #[awt]
     #[tokio::test]
-    async fn peers_concurrently_finishing_uni_stream_before_accepting() -> Result<()> {
+    async fn peers_concurrently_finishing_uni_stream_before_accepting(
+        #[future]
+        #[case]
+        endpoint_1: Endpoint,
+        #[future]
+        #[case]
+        endpoint_2: Endpoint,
+    ) -> Result<()> {
         let _guard = crate::init_tracing_for_testing();
 
         let msg = b"hello";
-        let config_1 = EndpointConfig::random("test");
-        let endpoint_1 = Endpoint::new_quic_with_address(config_1, "localhost:0")?;
-
-        let config_2 = EndpointConfig::random("test");
-        let endpoint_2 = Endpoint::new_quic_with_address(config_2, "localhost:0")?;
         let addr_2 = endpoint_2.local_addr();
 
         let (connection_1_to_2, connection_2_to_1) = timeout(join(

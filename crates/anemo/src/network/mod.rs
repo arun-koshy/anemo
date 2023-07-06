@@ -222,6 +222,7 @@ impl Builder {
             }
             TransportConfig::Tls(_tls) => {
                 let tcp_listener = std::net::TcpListener::bind(self.bind_address)?;
+                tcp_listener.set_nonblocking(true)?;
                 Endpoint::new_tls(
                     endpoint_config,
                     tokio::net::TcpListener::from_std(tcp_listener)?,

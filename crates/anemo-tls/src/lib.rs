@@ -90,7 +90,7 @@ impl Connection {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("yamux stream error: {}", e);
+                    tracing::trace!("yamux stream error: {e}");
                     break;
                 }
             }

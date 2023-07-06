@@ -14,4 +14,4 @@ tokio = { version = "1.17.0", features = ["sync", "rt", "macros", "io-util"] }
 tokio-rustls = { version = "0.24", features = ["dangerous_configuration"] }
 tokio-util = { version = "0.7.4", features = ["compat"] }
 tracing = "0.1.32"
-yamux = "0.11.1"
+yamux = { git = "https://github.com/aschran/rust-yamux.git", rev = "ed1bd31a75305ca7f13bdc0ccd309905fa2a42c0" }

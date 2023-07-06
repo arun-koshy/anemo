@@ -303,6 +303,9 @@ impl Endpoint {
     pub async fn accept(&self) -> Result<Connection, std::io::Error> {
         // TODO-MUSTFIX add support for 'closed' endpoint.
         let (stream, peer_address) = self.inner.0.listener.accept().await?;
+        // TODO-MUSTFIX this will drop/lose the TCP connection if the future is dropped before
+        // completion because ConnectionManager select loop finishes something else first.
+        // I should save the connection here.
         let stream = self.inner.0.acceptor.accept(stream).await?;
         Ok(Connection::new(
             TlsStream::Server(stream),

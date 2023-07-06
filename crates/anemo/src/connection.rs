@@ -261,7 +261,8 @@ impl SendStream {
             SendStream::Quic(stream) => {
                 let _ = stream.stopped().await;
             }
-            SendStream::Tls(_stream) => (), // TODO-MUSTFIX: is this possible for TLS/yamux
+            // Stream cannot be stopped/reset for yamux.
+            SendStream::Tls(_stream) => futures::future::pending().await,
         }
     }
 }

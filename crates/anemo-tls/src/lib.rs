@@ -10,7 +10,7 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::{
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpSocket, TcpStream},
     sync::{mpsc, Mutex},
 };
 use tokio_rustls::{TlsAcceptor, TlsStream};
@@ -23,11 +23,24 @@ use tokio_util::compat::{
 #[non_exhaustive]
 pub struct ClientConfig {
     pub(crate) tls: Arc<tokio_rustls::rustls::ClientConfig>,
+    pub(crate) socket_send_buffer_size: Option<usize>,
+    pub(crate) socket_receive_buffer_size: Option<usize>,
+    pub(crate) allow_failed_socket_buffer_size_setting: bool,
 }
 
 impl ClientConfig {
-    pub fn new(tls: tokio_rustls::rustls::ClientConfig) -> Self {
-        Self { tls: Arc::new(tls) }
+    pub fn new(
+        tls: tokio_rustls::rustls::ClientConfig,
+        socket_send_buffer_size: Option<usize>,
+        socket_receive_buffer_size: Option<usize>,
+        allow_failed_socket_buffer_size_setting: bool,
+    ) -> Self {
+        Self {
+            tls: Arc::new(tls),
+            socket_send_buffer_size,
+            socket_receive_buffer_size,
+            allow_failed_socket_buffer_size_setting,
+        }
     }
 }
 
@@ -290,7 +303,25 @@ impl Endpoint {
         })?;
 
         let connector = tokio_rustls::TlsConnector::from(config.tls.clone());
-        let stream = TcpStream::connect(&addr).await?;
+
+        let socket = if addr.is_ipv4() {
+            TcpSocket::new_v4()?
+        } else {
+            TcpSocket::new_v6()?
+        };
+        if let Some(size) = config.socket_send_buffer_size {
+            let result = socket.set_send_buffer_size(size as u32);
+            if !config.allow_failed_socket_buffer_size_setting {
+                result?
+            }
+        }
+        if let Some(size) = config.socket_receive_buffer_size {
+            let result = socket.set_recv_buffer_size(size as u32);
+            if !config.allow_failed_socket_buffer_size_setting {
+                result?
+            }
+        }
+        let stream = socket.connect(addr).await?;
 
         let stream = connector.connect(parsed_server_name, stream).await?;
         Ok(Connection::new(

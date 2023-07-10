@@ -437,7 +437,7 @@ impl EndpointConfigBuilder {
             TransportConfig::Quic(quic) => {
                 InnerTransportConfig::Quic(Arc::new(quic.transport_config()))
             }
-            TransportConfig::Tls(_tls) => InnerTransportConfig::Tls,
+            TransportConfig::Tls(tls) => InnerTransportConfig::Tls(tls.to_owned()),
         });
         self
     }
@@ -564,7 +564,7 @@ impl EndpointConfigBuilder {
                 server.transport = transport_config.clone();
                 Ok(ServerConfig::Quic(server))
             }
-            InnerTransportConfig::Tls => Ok(ServerConfig::Tls(anemo_tls::ServerConfig::new(
+            InnerTransportConfig::Tls(_) => Ok(ServerConfig::Tls(anemo_tls::ServerConfig::new(
                 server_crypto,
             ))),
         }
@@ -582,14 +582,19 @@ impl EndpointConfigBuilder {
             .with_single_cert(vec![cert], pkcs8_der)?;
 
         match transport_config {
-            InnerTransportConfig::Quic(transport_config) => {
+            InnerTransportConfig::Quic(quic_config) => {
                 let mut client = quinn::ClientConfig::new(Arc::new(client_crypto));
-                client.transport_config(transport_config.clone());
+                client.transport_config(quic_config.clone());
                 Ok(ClientConfig::Quic(client))
             }
-            InnerTransportConfig::Tls => Ok(ClientConfig::Tls(anemo_tls::ClientConfig::new(
-                client_crypto,
-            ))),
+            InnerTransportConfig::Tls(tls_config) => {
+                Ok(ClientConfig::Tls(anemo_tls::ClientConfig::new(
+                    client_crypto,
+                    tls_config.socket_send_buffer_size,
+                    tls_config.socket_receive_buffer_size,
+                    tls_config.allow_failed_socket_buffer_size_setting,
+                )))
+            }
         }
     }
 }
@@ -639,7 +644,7 @@ impl ClientConfig {
 #[derive(Clone, Debug)]
 pub(crate) enum InnerTransportConfig {
     Quic(Arc<quinn::TransportConfig>),
-    Tls,
+    Tls(TlsConfig),
 }
 
 impl InnerTransportConfig {
@@ -647,6 +652,12 @@ impl InnerTransportConfig {
         match self {
             InnerTransportConfig::Quic(inner) => Ok(inner.clone()),
             _ => Err(anyhow!("called try_quic on a non-Quic TransportConfig")),
+        }
+    }
+    pub fn try_tls(&self) -> Result<TlsConfig> {
+        match self {
+            InnerTransportConfig::Tls(inner) => Ok(inner.clone()),
+            _ => Err(anyhow!("called try_tls on a non-TLS TransportConfig")),
         }
     }
 }
@@ -734,7 +745,16 @@ impl EndpointConfig {
                 ClientConfig::Quic(client)
             }
             ClientConfig::Tls(_) => {
-                let client = anemo_tls::ClientConfig::new(client_crypto);
+                let transport = self
+                    .transport_config
+                    .try_tls()
+                    .expect("config variants must match");
+                let client = anemo_tls::ClientConfig::new(
+                    client_crypto,
+                    transport.socket_send_buffer_size,
+                    transport.socket_receive_buffer_size,
+                    transport.allow_failed_socket_buffer_size_setting,
+                );
                 ClientConfig::Tls(client)
             }
         }

@@ -139,6 +139,27 @@ impl Default for TransportConfig {
     }
 }
 
+impl TransportConfig {
+    pub fn socket_send_buffer_size(&self) -> Option<usize> {
+        match self {
+            TransportConfig::Quic(config) => config.socket_send_buffer_size,
+            TransportConfig::Tls(config) => config.socket_send_buffer_size,
+        }
+    }
+    pub fn socket_receive_buffer_size(&self) -> Option<usize> {
+        match self {
+            TransportConfig::Quic(config) => config.socket_receive_buffer_size,
+            TransportConfig::Tls(config) => config.socket_receive_buffer_size,
+        }
+    }
+    pub fn allow_failed_socket_buffer_size_setting(&self) -> bool {
+        match self {
+            TransportConfig::Quic(config) => config.allow_failed_socket_buffer_size_setting,
+            TransportConfig::Tls(config) => config.allow_failed_socket_buffer_size_setting,
+        }
+    }
+}
+
 /// Configuration for QUIC transport.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -227,7 +248,24 @@ pub struct QuicConfig {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
-pub struct TlsConfig {}
+pub struct TlsConfig {
+    /// Size of the send buffer on the TCP socket (`SO_SNDBUF`).
+    ///
+    /// If unspecified, this will use the operating system default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub socket_send_buffer_size: Option<usize>,
+
+    /// Size of the receive buffer on the TCP socket (`SO_RCVBUF`).
+    ///
+    /// If unspecified, this will use the operating system default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub socket_receive_buffer_size: Option<usize>,
+
+    /// If true, failure to set UDP socket buffer sizes as requested above will not
+    /// prevent a Network from starting.
+    #[serde(default)]
+    pub allow_failed_socket_buffer_size_setting: bool,
+}
 
 impl Config {
     pub(crate) fn connection_manager_channel_capacity(&self) -> usize {
@@ -720,7 +758,11 @@ impl EndpointConfig {
 
     #[cfg(test)]
     pub(crate) fn random_tls(server_name: &str) -> Self {
-        let transport_config = TransportConfig::Tls(TlsConfig {});
+        let transport_config = TransportConfig::Tls(TlsConfig {
+            socket_receive_buffer_size: None,
+            socket_send_buffer_size: None,
+            allow_failed_socket_buffer_size_setting: true,
+        });
         Self::builder()
             .random_private_key()
             .server_name(server_name)

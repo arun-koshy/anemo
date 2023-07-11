@@ -156,7 +156,8 @@ impl Endpoint {
         trace!("Closing endpoint");
         match self.transport {
             Transport::Quic(ref inner) => inner.close(0_u32.into(), b"endpoint closed"),
-            Transport::Tls(ref _inner) => (), // TODO-MUSTFIX: add close
+            // TODO: add close for TLS.
+            Transport::Tls(ref _inner) => (),
         }
     }
 

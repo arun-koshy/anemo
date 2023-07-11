@@ -127,7 +127,6 @@ impl Connection {
                 .map_err(Into::into),
             ConnectionInner::Tls(connection) => {
                 let (send, _recv) = connection.open_stream().await?;
-                // TODO-MUSTFIX is it okay to just drop the recv side?
                 Ok(SendStream::Tls(send))
             }
         }
@@ -164,7 +163,8 @@ impl Connection {
             ConnectionInner::Quic(connection) => {
                 connection.close(0_u32.into(), b"connection closed")
             }
-            ConnectionInner::Tls(_connection) => (), // TODO-MUSTFIX any close functionality needed here?
+            // TODO: Implement close for TLS.
+            ConnectionInner::Tls(_connection) => (),
         }
     }
 
@@ -178,7 +178,6 @@ impl Connection {
                 .map_err(Into::into),
             ConnectionInner::Tls(connection) => {
                 let (_send, recv) = connection.accept_stream().await?;
-                // TODO-MUSTFIX is it okay to just drop the send side?
                 Ok(RecvStream::Tls(recv))
             }
         }
@@ -274,7 +273,8 @@ impl Drop for SendStream {
                 // We don't care if the stream has already been closed
                 let _ = stream.reset(0u8.into());
             }
-            SendStream::Tls(_stream) => (), // TODO-MUSTFIX: need any handling here?
+            // Nothing to do on drop for TLS.
+            SendStream::Tls(_stream) => (),
         }
     }
 }

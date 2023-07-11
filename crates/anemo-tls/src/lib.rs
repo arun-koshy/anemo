@@ -67,7 +67,6 @@ pub struct Connection(ConnectionRef);
 impl Connection {
     fn new(stream: TlsStream<TcpStream>, peer_address: SocketAddr, mode: yamux::Mode) -> Self {
         let (_, state) = stream.get_ref();
-        // TODO-MUSTFIX can/should I do something here to guarantee this returns Some?
         let peer_identity = state.peer_certificates().map(|certs| certs[0].to_owned());
 
         let (control, connection) = yamux::Control::new(yamux::Connection::new(
@@ -139,7 +138,6 @@ impl Connection {
     }
 
     pub async fn accept_stream(&self) -> Result<(SendStream, RecvStream)> {
-        // TODO-MUSTFIX: can this mutex be avoided?
         let stream = self
             .0
              .0
@@ -179,7 +177,6 @@ pub(crate) struct ConnectionInnerState {
     rx_streams: mpsc::Receiver<yamux::Stream>,
 }
 
-// TODO-MUSTFIX: is it necessary to add a Drop handler to close anything here?
 pub struct SendStream {
     stream: Compat<WriteHalf<yamux::Stream>>,
     display_str: String,
@@ -223,7 +220,6 @@ impl tokio::io::AsyncWrite for SendStream {
     }
 }
 
-// TODO-MUSTFIX: is it necessary to add a Drop handler to close anything here?
 pub struct RecvStream {
     stream: Compat<ReadHalf<yamux::Stream>>,
     display_str: String,
@@ -332,11 +328,11 @@ impl Endpoint {
     }
 
     pub async fn accept(&self) -> Result<Connection, std::io::Error> {
-        // TODO-MUSTFIX add support for 'closed' endpoint.
         let (stream, peer_address) = self.inner.0.listener.accept().await?;
-        // TODO-MUSTFIX this will drop/lose the TCP connection if the future is dropped before
+        // TODO: This will drop/lose the TCP connection if the future is dropped before
         // completion because ConnectionManager select loop finishes something else first.
-        // I should save the connection here.
+        // Ideally the connection should somehow be saved here, but it's not a huge deal
+        // since clients can just retry connecting.
         let stream = self.inner.0.acceptor.accept(stream).await?;
         Ok(Connection::new(
             TlsStream::Server(stream),

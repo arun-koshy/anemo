@@ -47,19 +47,6 @@ impl InboundRequestHandler {
 
         let close_reason = loop {
             tokio::select! {
-                // anemo does not currently use uni streams so we can
-                // just ignore and drop the stream
-                // TODO-MUSTFIX is it ok to just disable this? otherwise no way currently on TLS
-                // side to disambiguate between incoming uni and bi streams
-                // uni = self.connection.accept_uni() => {
-                //     match uni {
-                //         Ok(recv_stream) => trace!("incoming uni stream! {}", recv_stream),
-                //         Err(e) => {
-                //             trace!("error listening for incoming uni streams: {e}");
-                //             break e;
-                //         }
-                //     }
-                // },
                 bi = self.connection.accept_bi() => {
                     match bi {
                         Ok((bi_tx, bi_rx)) => {

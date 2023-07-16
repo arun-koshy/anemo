@@ -3,6 +3,7 @@ use std::convert::Infallible;
 use anemo::{Network, Peer, Request, Response, Result};
 use anemo_tower::trace::TraceLayer;
 use bytes::Bytes;
+use anemo_tower::set_header::SetRequestHeaderLayer;
 
 async fn noop_handle(_request: Request<Bytes>) -> Result<Response<Bytes>, Infallible> {
     Ok(Response::new(bytes::Bytes::new()))
@@ -13,6 +14,7 @@ pub async fn create_client_network(address: &str, server_name: &str) -> Result<(
         .private_key(random_key())
         .server_name(server_name)
         .outbound_request_layer(TraceLayer::new_for_client_and_server_errors())
+        .outbound_request_layer(SetRequestHeaderLayer::overriding("epoch".to_string(), "67"))
         .start(tower::service_fn(noop_handle))
         .unwrap();
     let peer_id = network.connect(address).await?;

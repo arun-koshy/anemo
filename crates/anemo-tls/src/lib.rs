@@ -23,16 +23,16 @@ use tokio_util::compat::{
 #[non_exhaustive]
 pub struct ClientConfig {
     pub(crate) tls: Arc<tokio_rustls::rustls::ClientConfig>,
-    pub(crate) socket_send_buffer_size: Option<usize>,
-    pub(crate) socket_receive_buffer_size: Option<usize>,
+    pub(crate) socket_send_buffer_size: Option<u32>,
+    pub(crate) socket_receive_buffer_size: Option<u32>,
     pub(crate) allow_failed_socket_buffer_size_setting: bool,
 }
 
 impl ClientConfig {
     pub fn new(
         tls: tokio_rustls::rustls::ClientConfig,
-        socket_send_buffer_size: Option<usize>,
-        socket_receive_buffer_size: Option<usize>,
+        socket_send_buffer_size: Option<u32>,
+        socket_receive_buffer_size: Option<u32>,
         allow_failed_socket_buffer_size_setting: bool,
     ) -> Self {
         Self {
@@ -50,11 +50,18 @@ impl ClientConfig {
 pub struct ServerConfig {
     /// Transport configuration to use
     pub(crate) tls: Arc<tokio_rustls::rustls::ServerConfig>,
+    pub(crate) socket_receive_buffer_size: Option<u32>,
 }
 
 impl ServerConfig {
-    pub fn new(tls: tokio_rustls::rustls::ServerConfig) -> Self {
-        Self { tls: Arc::new(tls) }
+    pub fn new(
+        tls: tokio_rustls::rustls::ServerConfig,
+        socket_receive_buffer_size: Option<u32>,
+    ) -> Self {
+        Self {
+            tls: Arc::new(tls),
+            socket_receive_buffer_size,
+        }
     }
 }
 
@@ -65,15 +72,24 @@ impl ServerConfig {
 pub struct Connection(ConnectionRef);
 
 impl Connection {
-    fn new(stream: TlsStream<TcpStream>, peer_address: SocketAddr, mode: yamux::Mode) -> Self {
+    fn new(
+        stream: TlsStream<TcpStream>,
+        peer_address: SocketAddr,
+        mode: yamux::Mode,
+        receive_window: Option<u32>,
+    ) -> Self {
         let (_, state) = stream.get_ref();
         let peer_identity = state.peer_certificates().map(|certs| certs[0].to_owned());
 
-        let (control, connection) = yamux::Control::new(yamux::Connection::new(
-            stream.compat(),
-            yamux::Config::default(),
-            mode,
-        ));
+        let mut cfg = yamux::Config::default();
+        cfg.set_split_send_size(128 * 1024);
+        if let Some(receive_window) = receive_window {
+            cfg.set_receive_window(receive_window)
+                .set_max_buffer_size(receive_window as usize * 2);
+        }
+        tracing::warn!("anemo-tls: new connection with yamux config: {cfg:?}"); //TODO-MUSTFIX
+        let (control, connection) =
+            yamux::Control::new(yamux::Connection::new(stream.compat(), cfg, mode));
 
         // Weird quirk alert:
         // yamux requires us to constantly drive the ControlledConnection or else new *outbound*
@@ -278,9 +294,13 @@ pub struct Endpoint {
 
 impl Endpoint {
     pub fn new(config: ServerConfig, listener: TcpListener) -> Self {
-        let acceptor = TlsAcceptor::from(config.tls);
+        let acceptor = TlsAcceptor::from(config.tls.clone());
         Self {
-            inner: EndpointRef(Arc::new(EndpointInner { listener, acceptor })),
+            inner: EndpointRef(Arc::new(EndpointInner {
+                listener,
+                acceptor,
+                config,
+            })),
         }
     }
 
@@ -324,6 +344,7 @@ impl Endpoint {
             TlsStream::Client(stream),
             addr,
             yamux::Mode::Client,
+            config.socket_receive_buffer_size,
         ))
     }
 
@@ -338,6 +359,7 @@ impl Endpoint {
             TlsStream::Server(stream),
             peer_address,
             yamux::Mode::Server,
+            self.inner.0.config.socket_receive_buffer_size,
         ))
     }
 }
@@ -348,4 +370,5 @@ pub(crate) struct EndpointRef(Arc<EndpointInner>);
 pub(crate) struct EndpointInner {
     pub(crate) listener: TcpListener,
     pub(crate) acceptor: TlsAcceptor,
+    pub(crate) config: ServerConfig,
 }

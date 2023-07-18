@@ -142,13 +142,17 @@ impl TransportConfig {
     pub fn socket_send_buffer_size(&self) -> Option<usize> {
         match self {
             TransportConfig::Quic(config) => config.socket_send_buffer_size,
-            TransportConfig::Tls(config) => config.socket_send_buffer_size,
+            TransportConfig::Tls(config) => {
+                config.socket_send_buffer_size.map(|size| size as usize)
+            }
         }
     }
     pub fn socket_receive_buffer_size(&self) -> Option<usize> {
         match self {
             TransportConfig::Quic(config) => config.socket_receive_buffer_size,
-            TransportConfig::Tls(config) => config.socket_receive_buffer_size,
+            TransportConfig::Tls(config) => {
+                config.socket_receive_buffer_size.map(|size| size as usize)
+            }
         }
     }
     pub fn allow_failed_socket_buffer_size_setting(&self) -> bool {
@@ -252,13 +256,13 @@ pub struct TlsConfig {
     ///
     /// If unspecified, this will use the operating system default.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub socket_send_buffer_size: Option<usize>,
+    pub socket_send_buffer_size: Option<u32>,
 
     /// Size of the receive buffer on the TCP socket (`SO_RCVBUF`).
     ///
     /// If unspecified, this will use the operating system default.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub socket_receive_buffer_size: Option<usize>,
+    pub socket_receive_buffer_size: Option<u32>,
 
     /// If true, failure to set UDP socket buffer sizes as requested above will not
     /// prevent a Network from starting.
@@ -564,8 +568,9 @@ impl EndpointConfigBuilder {
                 server.transport = transport_config.clone();
                 Ok(ServerConfig::Quic(server))
             }
-            InnerTransportConfig::Tls(_) => Ok(ServerConfig::Tls(anemo_tls::ServerConfig::new(
+            InnerTransportConfig::Tls(tls) => Ok(ServerConfig::Tls(anemo_tls::ServerConfig::new(
                 server_crypto,
+                tls.socket_receive_buffer_size,
             ))),
         }
     }

@@ -82,7 +82,6 @@ impl Connection {
         let peer_identity = state.peer_certificates().map(|certs| certs[0].to_owned());
 
         let mut cfg = yamux::Config::default();
-        cfg.set_split_send_size(128 * 1024);
         if let Some(receive_window) = receive_window {
             cfg.set_receive_window(receive_window)
                 .set_max_buffer_size(receive_window as usize * 2);

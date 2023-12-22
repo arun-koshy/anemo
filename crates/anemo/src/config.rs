@@ -343,14 +343,13 @@ impl QuicConfig {
         }
 
         config.packet_threshold(6);
-        config.time_threshold(2.0);
+        config.time_threshold(1.5);
         config.persistent_congestion_threshold(6);
-        // config.datagram_receive_buffer_size(Some(100 << 20));
-        // config.datagram_send_buffer_size(100 << 20);
+        config.datagram_receive_buffer_size(Some(50 << 20));
+        config.datagram_send_buffer_size(50 << 20);
 
-        let mut cc_config = congestion::NewRenoConfig::default();
+        let mut cc_config = congestion::BbrConfig::default();
         cc_config.initial_window(4 << 20);
-        cc_config.loss_reduction_factor(0.8);
         config.congestion_controller_factory(Arc::new(cc_config));
 
         config
